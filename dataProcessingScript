@@ -1,0 +1,518 @@
+# %%
+import pandas as pd
+import numpy as np
+import pickle
+
+# %%
+# Read the "Ontgraven" section (left part)
+df_ontgraven = pd.read_excel("../Data/Grondstromen Dashboard Uitvoering.xlsx", sheet_name="Kopie matrix 6.0", 
+                             skiprows=14, usecols="A:H", nrows = 273)
+
+# Read the "Aanvullen" section (right part, starting from column I)
+# We'll need to transpose this data
+df_aanvullen_raw = pd.read_excel("../Data/Grondstromen Dashboard Uitvoering.xlsx", sheet_name="Kopie matrix 6.0", 
+                                usecols="H:FD", nrows= 14, header= None)
+
+# Transpose the aanvullen data
+df_aanvullen = df_aanvullen_raw.transpose()
+
+headers = df_aanvullen.iloc[0].dropna()
+
+df_aanvullen = df_aanvullen.iloc[8:].drop(columns = [1,2,3,4,5,6])
+
+df_aanvullen.columns = headers
+
+df_aanvullen = df_aanvullen.rename(columns = {'Aanvullen' : 'Object'})
+
+# df_ontgraven = df_ontgraven[df_ontgraven['Locatietype'] != 'Tijdelijk']
+# df_aanvullen = df_aanvullen[df_aanvullen['Locatietype'] != 'Tijdelijk']
+
+df_ontgraven['Unnamed: 0'] = df_ontgraven['Unnamed: 0'].fillna(method='ffill')
+
+df_ontgraven = df_ontgraven.rename(columns = {'Unnamed: 0' : 'Object'})
+
+df_ontgraven = df_ontgraven.iloc[1:267]
+
+# %%
+df_aanvullen = df_aanvullen[df_aanvullen['Erosieklasse'] != 'zandbed']
+
+# %%
+df_ontgraven['Object'] = df_ontgraven['Object'].str.upper()
+df_aanvullen['Object'] = df_aanvullen['Object'].str.upper()
+
+# %%
+print(df_ontgraven.head(5))
+print(df_ontgraven.tail(5))
+print(df_aanvullen.head(5))
+print(df_aanvullen.tail(5))
+
+print(f'\nAmount of supply instances: {len(df_ontgraven)}')
+print(f'Amount of demand instances: {len(df_aanvullen)}')
+
+# %%
+# COB klei is klei NG 
+
+df_ontgraven['Erosieklasse'] = df_ontgraven.apply(lambda x: '3' if x['Locatie'] == 'COB-0055' else x['Erosieklasse'], axis=1)
+
+# %%
+# transport loss + 10% loss for teelaarde
+df_ontgraven['Volume'] = df_ontgraven.apply(
+    lambda x: x['Volume'] * 0.88 if x['Grondsoort'] == 'teelaarde' 
+              else x['Volume'] if x['Erosieklasse'] == 'Keramische klei' 
+              else x['Volume'] * 0.98, 
+    axis=1
+)
+
+# %%
+#Add column to work with compatibility tables correctly
+
+df_ontgraven['Grondsoort'] = df_ontgraven['Grondsoort'].astype(str)
+df_ontgraven['Erosieklasse'] = df_ontgraven['Erosieklasse'].astype(str)
+
+df_ontgraven['Civieltechnisch'] = df_ontgraven['Grondsoort'] + ' ' + df_ontgraven['Erosieklasse']
+
+df_ontgraven['Civieltechnisch'] = df_ontgraven['Civieltechnisch'].str.replace('nan', '').str.strip()
+
+df_ontgraven['Civieltechnisch'] = df_ontgraven['Civieltechnisch'].replace('klei Keramische klei', 'Keramische klei')
+
+print(df_ontgraven['Civieltechnisch'].unique())
+
+# %%
+df_aanvullen['Grondsoort'] = df_aanvullen['Grondsoort'].astype(str)
+df_aanvullen['Erosieklasse'] = df_aanvullen['Erosieklasse'].astype(str)
+
+df_aanvullen['Civieltechnisch'] = df_aanvullen['Grondsoort'] + ' ' + df_aanvullen['Erosieklasse']
+
+df_aanvullen['Civieltechnisch'] = df_aanvullen['Civieltechnisch'].str.replace('nan', '').str.strip()
+
+df_aanvullen['Civieltechnisch'] = df_aanvullen['Civieltechnisch'].replace({
+    'zand': 'zand NG',
+    'klei Roofgrond': 'Roofgrond',
+    'klei_kleiinkassing 1': 'klei_kleiinkassing 3',
+    'kernmateriaal 3': 'klei 3',
+    'klei Roofgrond flex' : 'Roofgrond flex',
+})
+
+print(df_aanvullen['Civieltechnisch'].unique())
+
+# %%
+print(df_ontgraven['Object'].unique())
+
+df_ontgraven['Objecttype'] = df_ontgraven['Object'].apply(lambda x: 'Dijk' if str(x).startswith('DS') else 'Rivier')
+
+df_ontgraven.loc[1, 'Objecttype'] = 'Dijk'
+
+print(df_ontgraven[['Object', 'Objecttype']].head(5))
+print(df_ontgraven[['Object', 'Objecttype']].tail(5))
+
+# %%
+print(df_aanvullen['Object'].unique())
+
+df_aanvullen['Objecttype'] = df_aanvullen['Object'].apply(lambda x: 'Dijk' if str(x).startswith('DS') else 'Rivier')
+
+print(df_aanvullen[['Object', 'Objecttype']].head(5))
+print(df_aanvullen[['Object', 'Objecttype']].tail(5))
+
+# %%
+
+
+# %%
+#does ontgraven en aanvullen sum to 0? 
+
+print(df_ontgraven['Volume'].sum())
+print(df_aanvullen['Volume'].sum())
+
+print(df_ontgraven['Volume'].sum() + df_aanvullen['Volume'].sum())
+
+# %%
+print(df_ontgraven['Locatie'].unique())
+print(len(df_ontgraven['Locatie'].unique()))
+
+print(df_aanvullen['Locatie'].unique())
+print(len(df_aanvullen['Locatie'].unique()))
+
+# %% [markdown]
+# # Milieuklasse Check
+
+# %%
+# Milieuklasse check
+
+# Define the source soil types (VRIJ KOMENDE GROND)
+source_soils = [
+    ('Dijk', 'LB', 'Industrie (WB = A)'),
+    ('Dijk', 'WB', 'A (LB = Ind)'),
+    ('Rivier', 'WB', 'NT'),
+    ('Rivier', 'WB', 'B (LB = Ind)'),
+    ('Rivier', 'WB', 'A (LB = Ind)'),
+    ('Rivier', 'WB', 'AW (LB = Ind)'),
+    ('Rivier', 'WB', 'AW')
+]
+
+# Define the receiving soil types (ONTVANGENDE BODEM/TOEPASSING)
+receiving_soils = [
+    ('Dijk', 'LB', 'Industrie'),
+    ('Dijk', 'WB', 'A (LB = Ind)'),
+    ('Rivier', 'WB', 'B (LB = Ind)'),
+    ('Rivier', 'WB', 'A (LB = Ind)'),
+    ('Rivier', 'WB', 'AW (LB = Ind)'),
+    ('Rivier', 'WB', 'AW'),
+    ('Algemeen', None, 'Zandbanen'),
+    ('Algemeen', None, 'Locale verschraling'),
+    ('Algemeen', None, 'Verkoop'),
+    ('Algemeen', None, 'Stort')
+]
+
+# Create compatibility matrix (True for green/compatible, False for red/incompatible)
+# Based on the image pattern
+compatibility_matrix = [
+    # Dijk, LB, Industrie
+    [True, True, True, True, True, True, False, False, False, False],
+    # Dijk, WB, A
+    [True, True, True, True, True, True, False, False, True, False],
+    # Rivier, WB, NT
+    [False, False, False, False, False, False, False, False, False, True],
+    # Rivier, WB, B
+    [True, True, True, True, True, True, True, True, False, False],
+    # Rivier, WB, A
+    [True, True, True, True, True, True, True, True, False, False],
+    # Rivier, WB, AW (LB = Ind)
+    [True, True, True, True, True, True, True, True, True, False],
+    # Rivier, WB, AW
+    [True, True, True, True, True, True, True, True, True, False]
+]
+
+# Create a dictionary-based representation for easier lookup
+compatibility_dict_env = {}
+
+for i, source in enumerate(source_soils):
+    source_key = (source[0], source[1], source[2])
+    compatible_targets = []
+    
+    for j, target in enumerate(receiving_soils):
+        if compatibility_matrix[i][j]:
+            compatible_targets.append((target[0], target[1], target[2]))
+    
+    compatibility_dict_env[source_key] = compatible_targets
+
+# Function to check compatibility
+def check_compatibility(source, target):
+    source_key = (source[0], source[1], source[2])
+    if source_key in compatibility_dict_env:
+        return target in compatibility_dict_env[source_key]
+    return False
+
+check_compatibility(('Dijk', 'LB', 'Industrie'), ('Algemeen', None, 'Zandbanen'))
+
+# %% [markdown]
+# # Erosieklasse check
+
+# %%
+# Define source soil types (VRIJKOMENDE GROND)
+source_soils = [
+    # Dijk soils
+    ('Dijk', 'teelaarde_kleiinkassing'),
+    ('Dijk', 'teelaarde'),
+    ('Dijk', 'grond'),
+    ('Dijk', 'klei 3'),
+    ('Dijk', 'zand NG'),
+    # Rivier soils
+    ('Rivier', 'klei 1'),
+    ('Rivier', 'klei 2'),
+    ('Rivier', 'klei 3'),
+    ('Rivier', 'klei NG'),
+    ('Rivier', '<5 klei 1'),
+    ('Rivier', '<5 klei 2'),
+    ('Rivier', '<5 klei 3'),
+    ('Rivier', '<5 klei NG'),
+    ('Rivier', 'klei 1-aaltje'),
+    ('Rivier', 'klei 2-aaltje'),
+    ('Rivier', 'klei 3-aaltje'),
+    ('Rivier', 'Keramische klei'),
+    ('Rivier', 'grind'), 
+    ('Rivier', 'zand NG'),
+    ('Rivier', 'zand werkweg')
+]
+
+# Define receiving soil types (TOEPASSING)
+receiving_soils = [
+    ('Verlies', 'Transportverlies'), #Already doing this upfront in recalculating the Volume column
+    ('Verlies', '10% verlies'),
+    ('Dijk', 'teelaarde'),
+    ('Dijk', 'klei 3'),
+    ('Dijk', 'kernmateriaal'),
+    ('Dijk', 'klei 2'),
+    ('Dijk', 'teelaarde_kleiinkassing'),
+    ('Dijk', 'klei_kleiinkassing 3'),
+    ('Rivier', 'klei 1'),
+    ('Rivier', 'klei 2'),
+    ('Rivier', 'klei NG'),
+    ('Rivier', 'teelaarde'),
+    ('Rivier', 'grond'),
+    ('Rivier', 'zand NG'),
+    ('Rivier', 'lemig zand'),
+    ('Rivier', 'Roofgrond'),
+    ('Rivier', 'Roofgrond flex'),
+    ('Algemeen', 'Zandbanen'), 
+    ('Algemeen', 'Locale verschraling'),
+    ('Algemeen', 'Verkoop'),
+    ('Algemeen', 'Stort')
+]
+
+# Create a matrix representation of the compatibility with priority numbers
+# 0 = not compatible (red), 1-6 = priority level (green with number)
+
+compatibility_matrix = [
+    # For Dijk - teelaarde_kleininkassing
+    [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0],
+    # For Dijk - teelaarde
+    [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0],
+    # For Dijk - grond
+    [1, 0, 0, 1, 3, 0, 0, 2, 0, 0, 0, 0, 4, 0, 0, 1, 1, 0, 0, 0, 0],
+    # For Dijk - klei 3
+    [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0],
+    # For Dijk - zand NG
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0],
+    # For Rivier - klei 1
+    [1, 0, 0, 5, 6, 1, 0, 2, 3, 4, 8, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0],
+    # For Rivier - klei 2
+    [1, 0, 0, 4, 6, 1, 0, 2, 0, 3, 7, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0],
+    # For Rivier - klei 3
+    [1, 0, 4, 2, 3, 0, 0, 1, 0, 0, 6, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0],
+    # For Rivier - klei NG
+    [1, 0, 2, 0, 1, 0, 3, 0, 0, 0, 5, 4, 1, 0, 0, 1, 1, 0, 0, 0, 0],
+    # For Rivier - <5 klei 1
+    [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 4, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0],
+    # For Rivier - <5 klei 2
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0],
+    # For Rivier - <5 klei 3
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0],
+    # For Rivier - <5 klei NG
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0],
+    # For Rivier - klei 1-aaltje
+    [1, 0, 0, 5, 0, 1, 0, 2, 3, 4, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0],
+    # For Rivier - klei 2-aaltje
+    [1, 0, 0, 4, 0, 1, 0, 2, 0, 3, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0],
+    # For Rivier - klei 3-aaltje
+    [1, 0, 4, 2, 3, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0],
+    # For Rivier - Keramische klei
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+    # For Rivier - grind
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+    # For Rivier - zand NG
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0],
+    # For Rivier - zand werkweg
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0]
+]
+
+# Create a dictionary for easy lookup
+compatibility_dict_civ = {}
+
+for i, source in enumerate(source_soils):
+    source_key = source
+    compatibility_dict_civ[source_key] = {}
+    
+    for j, target in enumerate(receiving_soils):
+        if i < len(compatibility_matrix) and j < len(compatibility_matrix[i]):
+            priority = compatibility_matrix[i][j]
+            if priority > 0:  # If compatible (has a priority)
+                compatibility_dict_civ[source_key][target] = priority
+
+# Convert to pandas DataFrame for easier visualization
+index = pd.MultiIndex.from_tuples(source_soils, names=['Location', 'Type'])
+columns = pd.MultiIndex.from_tuples(receiving_soils, names=['Destination', 'DestType'])
+
+# Create DataFrame filled with NaN values
+df_compatibility = pd.DataFrame(np.nan, index=index, columns=columns)
+
+# Fill in the compatibility values
+for i, source in enumerate(source_soils):
+    for j, target in enumerate(receiving_soils):
+        if i < len(compatibility_matrix) and j < len(compatibility_matrix[i]):
+            value = compatibility_matrix[i][j]
+            if value > 0:
+                df_compatibility.loc[source, target] = value
+
+# Check compatibility and get priority
+def check_compatibility(source_location, source_type, dest_location, dest_type):
+    source = (source_location, source_type)
+    dest = (dest_location, dest_type)
+    
+    try:
+        priority = df_compatibility.loc[source, dest]
+        if not pd.isna(priority):
+            return True, int(priority)
+        else:
+            return False, 0
+    except KeyError:
+        return False, 0
+    
+# Example usage
+source_location = 'Dijk'
+source_type = 'teelaarde_kleiinkassing'
+dest_location = 'Algemeen'
+dest_type = 'Verlies'
+is_compatible, priority = check_compatibility(source_location, source_type, dest_location, dest_type)
+print(f"Is compatible: {is_compatible}, Priority: {priority}")
+
+# %%
+print(df_aanvullen.head(5))
+print(df_ontgraven.head(5))
+
+# %%
+#find planning in Excel and extract it
+
+df_planning = pd.read_excel("../Data/Grondstromen Dashboard Uitvoering.xlsx", sheet_name="DO leverantie in tijd", 
+                             skiprows=4, usecols="D:J", nrows = 25, header= None)
+
+df_planning = df_planning.drop(index = 9, columns = [4, 7])
+
+headers = ['Object', 'Uitvoering_Start', 'Uitvoering_End', 'Grondwerk_Start', 'Grondwerk_End']
+
+df_planning.columns = headers
+
+df_planning['Object'] = df_planning['Object'].str.upper()
+
+print(df_planning)
+
+
+# %%
+df_costs = pd.read_excel("../Data/Grondstromen - Voorbeeld - v6.3 Bpve.xlsx", sheet_name="Locatiematrix", 
+                            usecols="A:BB", nrows = 52)
+
+print(df_costs.head(5))
+print(df_costs.tail(5))
+
+df_costs = df_costs.rename(columns = {'Unnamed: 0' : 'Locatie'})
+
+print(df_costs[~df_costs['Locatie'].isin(df_ontgraven['Locatie'])]['Locatie'].unique())
+print(df_costs[~df_costs['Locatie'].isin(df_aanvullen['Locatie'])]['Locatie'].unique())
+
+def find_value(df, source, destination):
+    try:
+        return df.loc[df['Locatie'] == source, destination].values[0]
+    except (IndexError, KeyError):
+        return None
+
+# Example usage
+value = find_value(df_costs, 'COB-0055', 'Leverantie')
+print(f"Value found: {value}")
+
+# %%
+
+# df_costs = pd.read_excel("../Data/Demo grondstromentool.xlsx", sheet_name="Locatiematrix", 
+#                              skiprows=2, usecols="F:O", nrows = 10) 
+
+# df_costs = df_costs.set_index('Unnamed: 5')
+# df_costs = df_costs.rename({'Unnamed: 5' : ''}, axis = 1)
+
+# def get_cost(df, from_location, to_location):
+#     try:
+#         return df.loc[from_location, to_location]
+#     except KeyError:
+#         return f"One or both locations '{from_location}', '{to_location}' not found in the matrix"
+    
+# get_cost(df_costs, 'Afvoer per as', 'Meander de Waarden deel B')
+
+
+# %%
+print(df_aanvullen) #demand
+print(df_ontgraven) #supply
+print(df_compatibility) #for civil engineering applicability and priority
+#
+print(df_costs) #costs to move between locations
+print(df_planning) #time windows for when locations are available and need to be finished
+
+# %%
+print(df_planning)
+
+# %%
+print(df_aanvullen.head(2))
+print(df_ontgraven.head(2))
+
+# %%
+print(compatibility_dict_civ)
+
+# %%
+print(df_ontgraven.tail(1))
+print(df_aanvullen.head(1))
+
+print(df_ontgraven.columns)
+print(df_aanvullen.columns)
+
+# %%
+print(compatibility_dict_env)
+
+# %%
+df_ontgraven[df_ontgraven['Civieltechnisch'] == 'Keramische klei']
+
+# %%
+print(len(df_ontgraven))
+
+df_ontgraven = df_ontgraven[df_ontgraven['Civieltechnisch'] != 'Keramische klei']
+
+print(len(df_ontgraven))
+
+# %%
+df_ontgraven[df_ontgraven['Locatie'] == 'COB-0055']
+
+# %%
+
+
+# %%
+# Create a dictionary with all the objects
+data_objects = {
+    'df_aanvullen': df_aanvullen,
+    'df_ontgraven': df_ontgraven,
+    #'df_compatibility': df_compatibility,
+    'compatibility_dict_env': compatibility_dict_env,
+    'compatibility_dict_civ': compatibility_dict_civ,
+    'df_costs': df_costs,
+    'df_planning': df_planning
+}
+
+# Save all objects to a single file
+with open('..\Data\soil_transport_data.pkl', 'wb') as file:
+    pickle.dump(data_objects, file)
+
+# %%
+print(df_ontgraven.columns)
+print(df_aanvullen.columns)
+
+# %%
+print(df_ontgraven[df_ontgraven['Civieltechnisch'] == 'klei'])
+
+# %%
+union_template = pd.concat([df_ontgraven, df_aanvullen], keys=['Ontgraven', 'Aanvullen'], names=['Ontgraven/Aanvullen', 'Index'])
+
+union_template = union_template.reset_index(level=0)  # Reset the index for the 'Type' level
+
+union_template = union_template.reset_index(drop=True)  # Reset the index to avoid multi-level index
+
+print(union_template.head(266))
+
+union_template.to_csv('../Data/union_template.csv')
+
+# %%
+grouping_cols = union_template.columns.to_list()
+
+grouping_cols.remove('Volume')
+
+# Convert all grouping columns to string type
+for col in grouping_cols:
+    union_template[col] = union_template[col].astype(str).str.strip()
+
+# Now try the groupby operation again
+print(union_template.groupby(grouping_cols).size().sort_values(ascending=False))
+print(len(union_template))
+
+# union_template = union_template.groupby(grouping_cols).agg({'Volume': 'sum'}).reset_index()
+
+# print(len(union_template))
+
+# %%
+df_aanvullen[(df_aanvullen['Civieltechnisch'] == 'klei 1') & (df_aanvullen['Objecttype'] == 'Dijk')]
+
+# %%
+print(df_ontgraven[2:10])
+
+
